@@ -109,6 +109,10 @@ const tourSchema = new mongoose.Schema(
         ref: 'User',
       },
     ],
+    company: {
+      type: mongoose.Schema.ObjectId,
+      ref: 'User',
+    },
   },
   {
     toJSON: { virtuals: true },

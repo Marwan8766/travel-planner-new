@@ -2,14 +2,13 @@ const sendMail = require('../utils/email');
 const jwt = require('jsonwebtoken');
 const { promisify } = require('util');
 const crypto = require('crypto');
-const bcrypt = require("bcryptjs");
+const bcrypt = require('bcryptjs');
 const AppError = require('../utils/appError');
 const catchAsync = require('../utils/catchAsync');
 const sendEmail = require('../utils/email');
 const User = require('../models/userModel');
-const Token = require('../models/token.model')
+const Token = require('../models/token.model');
 const blacklistToken = require('../models/blackListToken.model');
-
 
 const signToken = (id) =>
   jwt.sign({ id }, process.env.JWT_SECRET, {
@@ -42,12 +41,20 @@ exports.signup = catchAsync(async (req, res, next) => {
     email: req.body.email,
     password: req.body.password,
     passwordConfirm: req.body.passwordConfirm,
-    passwordChangedAt: req.body.passwordChangedAt,
+    contact: req.body.contact,
+    address: req.body.address,
+    website: req.body.website,
+    overview: req.body.overview,
+    country: req.body.country,
+    city: req.body.city,
     role: req.body.role === 'admin' ? 'user' : req.body.role,
   });
   // create token to be sent by email
   const token = newUser.createEmailConfirmtToken();
-  await newUser.save({ validateModifiedOnly: true });
+  const updatedNewUser = await newUser.save({ validateModifiedOnly: true });
+
+  if (!updatedNewUser)
+    return next(new AppError('Error signing you up please try again', 500));
 
   // SEND the token to users's email
   const confirmEmailURL = `${req.protocol}://${req.get(
@@ -62,8 +69,34 @@ exports.signup = catchAsync(async (req, res, next) => {
     html,
   };
 
+  let accountLink;
+  const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+  if (updatedNewUser.stripeAccountId && updatedNewUser.role === 'company') {
+    // Send an email to the customer to complete their account setup
+    accountLink = await stripe.accountLinks.create({
+      account: updatedNewUser.stripeAccountId,
+      type: 'account_onboarding',
+      refresh_url: 'https://example.com/reauth',
+      return_url: 'https://example.com/return',
+    });
+  }
+  console.log('acc link: ', accountLink);
+
+  const optionsObj2 = {
+    email: newUser.email,
+    subject:
+      'Your stripe account link, please open and continue activating your account to be able to sell your services and receive money',
+    html: `<h1>open this url and activate your stripe account</h1><a href="${accountLink.url}"> Click Here </a>
+    <a href="${accountLink.url}"></a>
+    `,
+  };
+
   try {
     await sendMail(optionsObj);
+
+    if (updatedNewUser.stripeAccountId && updatedNewUser.role === 'company')
+      await sendMail(optionsObj2);
 
     res.status(200).json({
       status: 'success',
@@ -80,7 +113,7 @@ exports.signup = catchAsync(async (req, res, next) => {
 
 exports.confirmEmail = catchAsync(async (req, res, next) => {
   // encrypt token sent by email
-  console.log("yy")
+  console.log('yy');
 
   let token = crypto
     .createHash('sha256')
@@ -139,7 +172,7 @@ exports.login = catchAsync(async (req, res, next) => {
   });
   if (!tokenDocument)
     return next(
-      new AppError("Error while logging in please try again later", 400)
+      new AppError('Error while logging in please try again later', 400)
     );
   res.status(200).json({
     status: 'success',
@@ -147,13 +180,11 @@ exports.login = catchAsync(async (req, res, next) => {
   });
 });
 
-
-
 exports.forgotPassword = catchAsync(async (req, res, next) => {
   // GET user based on POSTed email
   const user = await User.findOne({ email: req.body.email });
   if (!user) return next(new AppError('There is no user with this email'), 404);
-// add all tokens associated with that user to black list
+  // add all tokens associated with that user to black list
 
   // find all tokens associated with that user
   const tokens = await Token.find({ userId: user._id });
@@ -168,13 +199,13 @@ exports.forgotPassword = catchAsync(async (req, res, next) => {
       });
       // check that each token is added else return with error
       if (!blackListToken)
-        return next(new AppError("Error while Changing password", 400));
+        return next(new AppError('Error while Changing password', 400));
     }
     // delete all tokrns associated with that user from tokens collection
     const deletedTokens = await Token.deleteMany({ userId: user._id });
     // if there was an error return next
     if (!deletedTokens)
-      return next(new AppError("Error while changing password", 400));
+      return next(new AppError('Error while changing password', 400));
   }
   // GENERATE the random reset token
   const resetToken = user.createPasswordResetToken();
@@ -241,13 +272,13 @@ exports.resetPassword = catchAsync(async (req, res, next) => {
       });
       // check that each token is added else return with error
       if (!blackListToken)
-        return next(new AppError("Error while Changing password", 400));
+        return next(new AppError('Error while Changing password', 400));
     }
     // delete all tokrns associated with that user from tokens collection
     const deletedTokens = await Token.deleteMany({ userId: user._id });
     // if there was an error return next
     if (!deletedTokens)
-      return next(new AppError("Error while changing password", 400));
+      return next(new AppError('Error while changing password', 400));
   }
   // UPDATE passwordChangedAt
   user.save({ validateModifiedOnly: true });
@@ -284,13 +315,13 @@ exports.updatePassword = catchAsync(async (req, res, next) => {
       });
       // check that each token is added else return with error
       if (!blackListToken)
-        return next(new AppError("Error while Changing password", 400));
+        return next(new AppError('Error while Changing password', 400));
     }
     // delete all tokrns associated with that user from tokens collection
     const deletedTokens = await Token.deleteMany({ userId: user._id });
     // if there was an error return next
     if (!deletedTokens)
-      return next(new AppError("Error while changing password", 400));
+      return next(new AppError('Error while changing password', 400));
   }
   // 3) if so, update password
   user.password = req.body.password;
@@ -379,6 +410,13 @@ exports.protect = catchAsync(async (req, res, next) => {
   )
     return next(
       new AppError('Your password has changed, please login again', 401)
+    );
+
+  // check if the token is in the black list tokens
+  const tokenBlackListed = await blacklistToken.findOne({ token });
+  if (tokenBlackListed)
+    return next(
+      new AppError('Your session has expired, please login again', 401)
     );
 
   req.user = currentUser;

@@ -2,11 +2,16 @@ const mongoose = require('mongoose');
 const validator = require('validator');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const AppError = require('../utils/appError');
 
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
     required: [true, 'Please write your name'],
+  },
+  image: {
+    type: String,
+    required: [false],
   },
   email: {
     type: String,
@@ -48,8 +53,27 @@ const userSchema = new mongoose.Schema({
   gender: {
     type: String,
     enum: ['male', 'female'],
-    default: 'male',
+    // default: 'male',
   },
+  contact: {
+    type: Number,
+  },
+  address: {
+    type: String,
+  },
+  website: {
+    type: String,
+  },
+
+  overview: {
+    type: String,
+    trim: true,
+    // required: [true, 'A tour must have a overview'],
+    select: true,
+  },
+  stripeAccountId: String,
+  country: String,
+  city: String,
   passwordChangedAt: Date,
   passwordResetToken: String,
   passwordResetExpires: Date,
@@ -82,6 +106,70 @@ userSchema.pre('save', async function (next) {
 
   // calling next to not to stop our mongoose middleware here
   next();
+});
+
+userSchema.pre('save', function (next) {
+  if (
+    this.role !== 'company' &&
+    (this.website || this.overview || this.address || this.stripeAccountId)
+  )
+    return next(
+      new AppError(
+        'only companies are allowed to add website , address or overview',
+        400
+      )
+    );
+  next();
+});
+
+userSchema.pre('save', async function (next) {
+  const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
+
+  // if the user isnot a company return
+  if (this.role !== 'company') return next();
+
+  // check that the company must have contact and address
+  if (!this.address || !this.contact || !this.city || !this.country)
+    return next(new AppError('A company must have address and contact', 400));
+
+  // if company already has an stripeAccountId return
+  if (this.stripeAccountId) return next();
+
+  try {
+    console.log('stripe secrett: ', process.env.STRIPE_SECRET_KEY);
+    // create a Stripe account for the company
+    const account = await stripe.accounts.create({
+      type: 'custom',
+      email: this.email,
+      business_type: 'company',
+      business_profile: {
+        name: this.name,
+        url: this.website,
+      },
+      company: {
+        name: this.name,
+        address: {
+          line1: this.address,
+        },
+      },
+      capabilities: {
+        card_payments: {
+          requested: true,
+        },
+        transfers: {
+          requested: true,
+        },
+      },
+    });
+
+    // save the Stripe account ID to the user document
+    this.stripeAccountId = account.id;
+
+    next();
+  } catch (error) {
+    console.error('error: ', error);
+    return next(new AppError('Error creating Stripe account', 500));
+  }
 });
 
 userSchema.pre('save', function (next) {
